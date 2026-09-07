@@ -143,7 +143,7 @@ Affine equivariance does not solve multimodality.
 Coordinate transforms, automatic initialization, and diagnostic integration
 remain outside this package.
 AbstractMCMC and LogDensityProblems adapters are not included. The interface is
-experimental during the initial 0.1 series.
+experimental during the initial 0.0 series.
 
 ## License
 

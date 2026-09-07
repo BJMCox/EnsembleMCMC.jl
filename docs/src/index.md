@@ -20,21 +20,24 @@ an initial vector of coordinate vectors. The following example discards warmup
 and collects two consecutive sample blocks.
 
 ```jldoctest quickstart
-julia> using EnsembleMCMC, Random, Random123
+using EnsembleMCMC, Random, Random123
 
-julia> rng = Philox4x((42, 1));
+rng = Philox4x((42, 1));
 
-julia> initial = [randn(rng, 2) for _ in 1:24];
+initial = [randn(rng, 2) for _ in 1:24];
 
-julia> logdensity(x) = -sum(abs2, x) / 2;
+logdensity(x) = -sum(abs2, x) / 2;
 
-julia> state = initialize(rng, logdensity, initial; move=StretchMove());
+state = initialize(rng, logdensity, initial; move=StretchMove());
 
-julia> step!(state, 100);
+step!(state, 100);
 
-julia> draws = sample!(state, 200); more = sample!(state, 50);
+draws = sample!(state, 200); more = sample!(state, 50);
 
-julia> (size(draws.positions), size(more.positions), current_state(state).sweep_count)
+println((size(draws.positions), size(more.positions), current_state(state).sweep_count))
+
+# output
+
 ((2, 24, 200), (2, 24, 50), 350)
 ```
 
@@ -50,21 +53,24 @@ inspect the state concurrently with a step. A failed state rejects both
 stable, independent copy is needed:
 
 ```jldoctest state_views
-julia> using EnsembleMCMC, Random, Random123
+using EnsembleMCMC, Random, Random123
 
-julia> rng = Philox4x((42, 3)); initial = [randn(rng, 2) for _ in 1:24];
+rng = Philox4x((42, 3)); initial = [randn(rng, 2) for _ in 1:24];
 
-julia> state = initialize(rng, x -> -sum(abs2, x) / 2, initial);
+state = initialize(rng, x -> -sum(abs2, x) / 2, initial);
 
-julia> step!(state, 10);
+step!(state, 10);
 
-julia> saved = snapshot(state);
+saved = snapshot(state);
 
-julia> saved_positions = deepcopy(saved.positions);
+saved_positions = deepcopy(saved.positions);
 
-julia> step!(state);
+step!(state);
 
-julia> (saved.sweep_count, current_state(state).sweep_count, saved.positions == saved_positions)
+println((saved.sweep_count, current_state(state).sweep_count, saved.positions == saved_positions))
+
+# output
+
 (10, 11, true)
 ```
 
@@ -73,26 +79,22 @@ the same fields as `current_state`; `positions` is a vector of coordinate
 vectors, `acceptances` and `attempts` are counts per move, and `move_index` is
 `0` before the first sweep.
 
-### Migration from the earlier experimental API
-
-`SequentialExec` and `MultiThreadedExec` are now `SerialExecutor` and
-`ThreadedExecutor`; `proposal_indices` is now `move_indices`. Move mixtures
-default to random selection for both integer and floating-point weights. Use
-`schedule=:cycle` for the former integer-weight cycle.
-
 ## Moves and threads
 
 ```jldoctest mixture
-julia> using EnsembleMCMC, Random, Random123
+using EnsembleMCMC, Random, Random123
 
-julia> rng = Philox4x((42, 2)); initial = [randn(rng, 2) for _ in 1:24];
+rng = Philox4x((42, 2)); initial = [randn(rng, 2) for _ in 1:24];
 
-julia> moves = MoveMixture((StretchMove(), DEMove(), DESnookerMove()), [4, 2, 1]; schedule=:cycle);
+moves = MoveMixture((StretchMove(), DEMove(), DESnookerMove()), [4, 2, 1]; schedule=:cycle);
 
-julia> state = initialize(rng, x -> -sum(abs2, x) / 2, initial;
-           move=moves, executor=ThreadedExecutor());
+state = initialize(rng, x -> -sum(abs2, x) / 2, initial;
+    move=moves, executor=ThreadedExecutor());
 
-julia> sample!(state, 7).move_indices == [1, 1, 1, 1, 2, 2, 3]
+println(sample!(state, 7).move_indices == [1, 1, 1, 1, 2, 2, 3])
+
+# output
+
 true
 ```
 

@@ -5,7 +5,7 @@ using Random
 using Random123: Philox4x, Threefry4x
 
 export StretchMove, DEMove, DESnookerMove, MoveMixture
-export SequentialExec, MultiThreadedExec, initialize, step!, sample!
+export SerialExecutor, ThreadedExecutor, initialize, step!, sample!, current_state, snapshot
 
 include("rng.jl")
 include("moves.jl")

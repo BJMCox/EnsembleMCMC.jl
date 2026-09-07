@@ -14,7 +14,9 @@ using EnsembleMCMC, Random, Random123
 rng = Philox4x((42, 1))
 initial = [randn(rng, 2) for _ in 1:24]
 state = initialize(rng, x -> -sum(abs2, x) / 2, initial)
-draws = sample!(state, 1_000)  # coordinates × walkers × sweeps
+step!(state, 100)               # warmup, without collecting draws
+draws = sample!(state, 1_000)
+draws.positions                  # coordinates × walkers × sweeps
 ```
 
 [Documentation](https://bjmcox.github.io/EnsembleMCMC.jl/) · [Apache 2.0 license](LICENSE.md)

@@ -10,6 +10,8 @@ CurrentModule = EnsembleMCMC
 initialize
 step!
 sample!
+current_state
+snapshot
 ```
 
 ## Moves
@@ -24,6 +26,6 @@ MoveMixture
 ## Execution
 
 ```@docs
-SequentialExec
-MultiThreadedExec
+SerialExecutor
+ThreadedExecutor
 ```

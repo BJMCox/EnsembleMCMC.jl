@@ -1,32 +1,33 @@
 abstract type AbstractExecutor end
 """
-    SequentialExec()
+    SerialExecutor()
 
 Evaluate walker proposals serially within each group of a sweep.
 """
-struct SequentialExec <: AbstractExecutor end
+struct SerialExecutor <: AbstractExecutor end
 """
-    MultiThreadedExec()
+    ThreadedExecutor()
 
 Evaluate walker proposals with Julia threads within each group of a sweep.
 Groups still advance in order. The log-density function must support concurrent
-calls. A deterministic target gives the same trajectory as [`SequentialExec`](@ref)
+calls. A deterministic target gives the same trajectory as [`SerialExecutor`](@ref)
 for the same initial state, move, RNG, and walker IDs.
 """
-struct MultiThreadedExec <: AbstractExecutor end
+struct ThreadedExecutor <: AbstractExecutor end
 
 """
-    MoveMixture(moves, weights)
+    MoveMixture(moves, weights; schedule=:random)
 
-Select one move per complete sweep. Integer weights give a repeating weighted
-cycle in component order. Other real weights give fixed random selection
-probabilities after normalization. Weights must be finite and nonnegative,
-with at least one positive weight.
+Select one move per complete sweep. `schedule=:random` gives fixed random
+selection probabilities after normalization, regardless of weight types.
+`schedule=:cycle` gives a repeating weighted cycle in component order and
+requires integer-valued weights. Weights must be finite and nonnegative,
+with at least one positive weight. The schedule and weights do not adapt.
 """
 struct MoveMixture{M<:Tuple,W<:AbstractVector}
     moves::M
     weights::W
-    function MoveMixture(moves, weights::AbstractVector{<:Real})
+    function MoveMixture(moves, weights::AbstractVector{<:Real}; schedule::Symbol=:random)
         Base.require_one_based_indexing(weights)
         ms = Tuple(moves)
         !isempty(ms) && all(m -> m isa AbstractEnsembleMove, ms) ||
@@ -34,14 +35,17 @@ struct MoveMixture{M<:Tuple,W<:AbstractVector}
         length(ms) == length(weights) || throw(DimensionMismatch("Moves and weights must match"))
         all(w -> isfinite(w) && w >= 0, weights) && any(>(0), weights) ||
             throw(ArgumentError("Weights must be finite, nonnegative and have positive mass"))
-        ws = if eltype(weights) <: Integer
-            total = sum(big, weights)
+        ws = if schedule == :cycle
+            all(isinteger, weights) || throw(ArgumentError("Cycle weights must be integer-valued"))
+            total = sum(BigInt, weights)
             total <= typemax(Int) || throw(ArgumentError("Mixture cycle is too long"))
             Int.(weights)
-        else
+        elseif schedule == :random
             values = collect(promote(map(float, weights)...))
             scaled = values ./ maximum(values)
             scaled ./ sum(scaled)
+        else
+            throw(ArgumentError("Mixture schedule must be :random or :cycle"))
         end
         new{typeof(ms),typeof(ws)}(ms, ws)
     end
@@ -79,21 +83,65 @@ mutable struct EnsembleState{F,M,W,E,R,P,V,L}
 end
 
 """
-    initialize(rng, logdensity, initial; move=StretchMove(), executor=SequentialExec(),
-               walker_ids=eachindex(initial))
+    current_state(state)
 
-Create one ensemble from a vector of finite coordinate vectors. The coordinates
-must have full affine rank and finite initial log densities. The state owns
+Inspect a valid ensemble without copying arrays or collecting a history.
+Return a named tuple with borrowed `positions` (a vector of coordinate vectors),
+`logdensities`, `accepted` and `walker_ids` (one entry per walker), and `attempts`
+and `acceptances` (cumulative counts per move). Scalar `move_index` names the
+move selected for the latest sweep; `sweep_count` counts completed sweeps.
+Before the first sweep, both scalars and all counts are zero, and `accepted`
+is false for every walker.
+
+Treat all borrowed arrays as read-only. Consume them before the next mutation
+of the state. Scalar metadata is captured at query time, not updated live.
+Do not inspect a state concurrently with stepping. Use [`snapshot`](@ref) to
+retain an owned copy. A state invalidated by a failed sweep cannot be queried.
+"""
+function current_state(state::EnsembleState)
+    state.valid || throw(ArgumentError("Cannot inspect a state after a failed sweep"))
+    return (; positions=state.positions, logdensities=state.logdensities,
+        accepted=state.accepted, walker_ids=state.walker_ids,
+        attempts=state.attempts, acceptances=state.accepts,
+        move_index=state.active_index, sweep_count=state.step)
+end
+
+"""
+    snapshot(state)
+
+Copy the fields returned by [`current_state`](@ref), including every nested
+array. Later steps and edits to the snapshot cannot affect each other.
+A snapshot contains sample data and counts, not a resumable sampler checkpoint.
+"""
+snapshot(state::EnsembleState) = deepcopy(current_state(state))
+
+function Base.show(io::IO, state::EnsembleState)
+    print(io, "EnsembleState(", length(first(state.positions)), " dimensions, ",
+        length(state.positions), " walkers, ", state.step, " sweeps, ",
+        state.valid ? "valid" : "invalid", ")")
+end
+
+Base.show(io::IO, ::MIME"text/plain", state::EnsembleState) = show(io, state)
+
+"""
+    initialize(rng, logdensity, initial; move=StretchMove(), executor=SerialExecutor(),
+               walker_ids=1:nwalkers)
+
+Create one ensemble from a vector of finite coordinate vectors or a matrix
+with axes (coordinate, walker). The coordinates must have full affine rank
+and finite initial log densities. The state owns
 copies of coordinates and RNG. Supported RNGs are Random123 Philox4x/Threefry4x
 with UInt64 counters.
 Use independent RNG seeds or streams for independent ensembles.
 
-Walker IDs remain fixed throughout the run. The density must not mutate its input,
-and must support concurrent calls with MultiThreadedExec. Do not mutate state fields.
+Walker IDs default to `1:nwalkers` and remain fixed throughout the run.
+The density must not mutate its input,
+and must support concurrent calls with ThreadedExecutor. Do not mutate state fields.
+Use [`current_state`](@ref) for borrowed inspection and [`snapshot`](@ref) for copies.
 """
 function initialize(
     rng::Union{Philox4x{UInt64},Threefry4x{UInt64}}, logdensity, initial::AbstractVector;
-    move = StretchMove(), executor::AbstractExecutor = SequentialExec(),
+    move = StretchMove(), executor::AbstractExecutor = SerialExecutor(),
     walker_ids = collect(eachindex(initial)),
 )
     isempty(initial) && throw(ArgumentError("An ensemble cannot be empty"))
@@ -127,8 +175,14 @@ function initialize(
         logdensity, moves, weights, executor, owned_rng, cycle_part,
         [rngpart_createrng(typeof(rng)) for _ in 1:n], ids, sortperm(ids),
         positions, deepcopy(positions), logds, copy(logds), fill(false, n),
-        zeros(Int, length(moves)), zeros(Int, length(moves)), 0, 1, true,
+        zeros(Int, length(moves)), zeros(Int, length(moves)), 0, 0, true,
     )
+end
+
+function initialize(rng::Union{Philox4x{UInt64},Threefry4x{UInt64}}, logdensity,
+    initial::AbstractMatrix; kwargs...)
+    Base.require_one_based_indexing(initial)
+    return initialize(rng, logdensity, eachcol(initial); kwargs...)
 end
 
 function _checked_logdensity(f, x)
@@ -202,12 +256,12 @@ function _evaluate!(state, move, part, proposal_idx, i, complement, acceptance_p
     return nothing
 end
 
-function _evaluate_group!(::SequentialExec, state, move, part, idx, group, complement, acceptance_part)
+function _evaluate_group!(::SerialExecutor, state, move, part, idx, group, complement, acceptance_part)
     for i in group
         _evaluate!(state, move, part, idx, i, complement, acceptance_part)
     end
 end
-function _evaluate_group!(::MultiThreadedExec, state, move, part, idx, group, complement, acceptance_part)
+function _evaluate_group!(::ThreadedExecutor, state, move, part, idx, group, complement, acceptance_part)
     Threads.@threads for k in eachindex(group)
         _evaluate!(state, move, part, idx, group[k], complement, acceptance_part)
     end
@@ -215,8 +269,13 @@ end
 
 """
     step!(state)
+    step!(state, nsweeps)
 
-Advance one full ensemble sweep. Mutate and return the state.
+Advance one full ensemble sweep, or `nsweeps` complete sweeps without storing
+a history. Mutate and return the state. Zero sweeps leave a valid state unchanged.
+Each sweep selects one move and updates every walker once, in ordered groups
+against frozen complements. Use [`current_state`](@ref) to consume each sweep
+without a copy, or [`snapshot`](@ref) to retain it.
 An exception during a sweep invalidates the state. Initialize a fresh state
 after correcting the target instead of resuming a partially completed sweep.
 """
@@ -252,6 +311,15 @@ function step!(state::EnsembleState)
     return state
 end
 
+function step!(state::EnsembleState, nsweeps::Integer)
+    nsweeps >= 0 || throw(ArgumentError("Sweep count must be nonnegative"))
+    state.valid || throw(ArgumentError("Cannot resume a state after a failed sweep"))
+    for _ in 1:nsweeps
+        step!(state)
+    end
+    return state
+end
+
 """
     sample!(state, nsweeps)
 
@@ -259,18 +327,19 @@ Advance and collect complete sweeps. Positions have axes (coordinate, walker,
 sweep). Rejections repeat the current state. Returned arrays own their storage.
 Each state represents one coupled ensemble, not independent walker chains.
 
-Return a named tuple with `positions`, `logdensities` and `accepted` (both indexed
-by walker and sweep), `proposal_indices` (one move index per sweep), and
+Return a named tuple with `positions`, `logdensities` and `accepted` (the latter
+two indexed by walker and sweep), `move_indices` (one move index per sweep), and
 `walker_ids` (one ID per walker). The initial positions are not included.
 """
 function sample!(state::EnsembleState, nsweeps::Integer)
     nsweeps >= 0 || throw(ArgumentError("Sweep count must be nonnegative"))
+    state.valid || throw(ArgumentError("Cannot resume a state after a failed sweep"))
     n = length(state.positions)
     d = length(first(state.positions))
     positions = Array{eltype(first(state.positions))}(undef, d, n, nsweeps)
     logdensities = Matrix{eltype(state.logdensities)}(undef, n, nsweeps)
     accepted = Matrix{Bool}(undef, n, nsweeps)
-    proposal_indices = Vector{Int}(undef, nsweeps)
+    move_indices = Vector{Int}(undef, nsweeps)
     for sweep in 1:nsweeps
         step!(state)
         for i in 1:n
@@ -278,8 +347,8 @@ function sample!(state::EnsembleState, nsweeps::Integer)
         end
         logdensities[:, sweep] .= state.logdensities
         accepted[:, sweep] .= state.accepted
-        proposal_indices[sweep] = state.active_index
+        move_indices[sweep] = state.active_index
     end
-    return (; positions, logdensities, accepted, proposal_indices,
+    return (; positions, logdensities, accepted, move_indices,
         walker_ids = copy(state.walker_ids))
 end

@@ -12,4 +12,4 @@ state = initialize(rng, x -> -sum(abs2, x) / 2, initial)
 draws = sample!(state, 1_000)  # coordinates × walkers × sweeps
 ```
 
-[Documentation](docs/src/index.md) · [Apache 2.0 license](LICENSE.md)
+[Documentation](https://bjmcox.github.io/EnsembleMCMC.jl/) · [Apache 2.0 license](LICENSE.md)

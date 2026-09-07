@@ -1,5 +1,10 @@
 # EnsembleMCMC.jl
 
+[![CI](https://github.com/BJMCox/EnsembleMCMC.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/BJMCox/EnsembleMCMC.jl/actions/workflows/CI.yml)
+[![Coverage](https://codecov.io/gh/BJMCox/EnsembleMCMC.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/BJMCox/EnsembleMCMC.jl)
+[![Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://bjmcox.github.io/EnsembleMCMC.jl/)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE.md)
+
 Ensemble MCMC with Stretch, differential-evolution, and snooker moves.
 Supports fixed move mixtures, threaded evaluation, and resumable sampling.
 

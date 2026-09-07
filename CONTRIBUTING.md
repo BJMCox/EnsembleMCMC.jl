@@ -22,6 +22,10 @@ CI checks Julia 1.10 and current stable Julia, serial and threaded execution,
 Linux/macOS/Windows, and strict documentation builds. Each state represents a
 coupled ensemble. Tests must preserve that statistical contract.
 
+The current Julia/Linux job collects source coverage, retains `lcov.info` as a
+`coverage` artifact, and uploads it to Codecov using GitHub OIDC. Coverage measures
+executed lines, not statistical correctness. No coverage percentage target is set.
+
 ## Before the first release
 
 - Confirm every CI job passes on the exact release commit.

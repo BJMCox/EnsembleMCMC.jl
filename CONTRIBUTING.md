@@ -16,7 +16,7 @@ julia --project=docs docs/make.jl
 Generated HTML is in `docs/build`. Serve that directory with a local HTTP server
 to view it. CI uploads the same build as a `documentation` artifact. Successful
 tests and docs builds on `main` deploy it to
-<https://bjmcox.github.io/EnsembleMCMC.jl/> through GitHub Pages.
+<https://juliabayes.org/EnsembleMCMC.jl/> through GitHub Pages.
 
 CI checks Julia 1.10 and current stable Julia, serial and threaded execution,
 Linux/macOS/Windows, and strict documentation builds. Each state represents a

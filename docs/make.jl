@@ -6,6 +6,7 @@ DocMeta.setdocmeta!(EnsembleMCMC, :DocTestSetup, :(using EnsembleMCMC); recursiv
 makedocs(
     root = @__DIR__,
     sitename = "EnsembleMCMC.jl",
+    repo = Documenter.Remotes.GitHub("JuliaBayes", "EnsembleMCMC.jl"),
     modules = [EnsembleMCMC],
     checkdocs = :exports,
     doctest = true,
@@ -13,7 +14,7 @@ makedocs(
     format = Documenter.HTML(
         prettyurls=true,
         edit_link="main",
-        canonical="https://bjmcox.github.io/EnsembleMCMC.jl/",
+        canonical="https://juliabayes.org/EnsembleMCMC.jl/",
     ),
     pages = ["Getting started" => "index.md", "API" => "api.md"],
 )

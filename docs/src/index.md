@@ -10,7 +10,7 @@ Until registration, install from the repository with an account that can access 
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/BJMCox/EnsembleMCMC.jl")
+Pkg.add(url="https://github.com/JuliaBayes/EnsembleMCMC.jl")
 ```
 
 ## Sample a target
@@ -148,4 +148,4 @@ experimental during the initial 0.1 series.
 ## License
 
 EnsembleMCMC.jl is licensed under Apache 2.0. See the repository's
-[`LICENSE.md`](https://github.com/BJMCox/EnsembleMCMC.jl/blob/main/LICENSE.md).
+[`LICENSE.md`](https://github.com/JuliaBayes/EnsembleMCMC.jl/blob/main/LICENSE.md).

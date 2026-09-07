@@ -26,6 +26,7 @@ MoveMixture
 ## Execution
 
 ```@docs
+BatchedLogDensity
 SerialExecutor
 ThreadedExecutor
 ```

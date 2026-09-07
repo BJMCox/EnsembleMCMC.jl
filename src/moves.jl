@@ -204,12 +204,7 @@ function _de_snooker_companion_indices(rng::AbstractRNG, complement_groups)
 end
 
 function _de_snooker_direction_norm(a, b)
-    T = float(promote_type(eltype(a), eltype(b)))
-    result = zero(T)
-    for i in eachindex(a, b)
-        result = hypot(result, a[i] - b[i])
-    end
-    return result
+    return norm((a[i] - b[i] for i in eachindex(a, b)))
 end
 
 function propose!(

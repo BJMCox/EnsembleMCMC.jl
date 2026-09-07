@@ -195,3 +195,6 @@ test_rng() = Philox4x((573, 19))
         @test snapshot(state) == before
     end
 end
+
+include("norm.jl")
+include("batched.jl")

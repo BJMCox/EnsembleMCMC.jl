@@ -109,6 +109,35 @@ Start Julia with multiple threads, such as `julia --threads=4`, to use
 mutate its input. Groups update in order with frozen complements. Seeded results
 do not depend on thread scheduling.
 
+## Batched log densities
+
+Use [`BatchedLogDensity`](@ref) to evaluate candidates together, one per column:
+
+```jldoctest batched
+using EnsembleMCMC, Random123
+
+scalar(x) = -sum(abs2, x) / 2
+batch!(values, positions) = (values .= scalar.(eachcol(positions)))
+target = BatchedLogDensity(scalar, batch!)
+initial = [-1.0 0 1 0; 0 -1 0 1]
+state = initialize(Philox4x((42, 4)), target, initial)
+println(size(sample!(state, 10).positions))
+
+# output
+
+(2, 4, 10)
+```
+
+The broadcast illustrates the API. Use a faster batched computation when available.
+Initialization uses `scalar`. Each nonempty group calls `batch!` once, omitting
+degenerate proposals. Fill every output, keep positions read-only, and retain
+neither borrowed array. Both callbacks must compute the same log density.
+Exceptions or invalid outputs invalidate the state.
+
+Storage remains on the CPU; this is not device-resident sampling.
+`ThreadedExecutor` parallelizes proposals. The callback owns evaluation
+parallelism. Cheap scalar targets may run faster without batching.
+
 ## Inputs and outputs
 
 Initial coordinates must be finite and span their dimension. Initial log densities

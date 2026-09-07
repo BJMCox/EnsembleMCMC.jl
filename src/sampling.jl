@@ -60,7 +60,7 @@ _walker_rngpart(part, purpose, proposal) = RNGPartition(
     AbstractRNG(part, _stream_index(purpose, proposal)), Base.OneTo(typemax(Int32) - 2),
 )
 
-mutable struct EnsembleState{F,M,W,E,R,P,V,L}
+mutable struct EnsembleState{F,M,W,E,R,P,V,L,B}
     logdensity::F
     moves::M
     weights::W
@@ -74,6 +74,7 @@ mutable struct EnsembleState{F,M,W,E,R,P,V,L}
     candidates::V
     logdensities::L
     candidate_logdensities::L
+    batch_workspace::B
     accepted::Vector{Bool}
     attempts::Vector{Int}
     accepts::Vector{Int}
@@ -135,8 +136,9 @@ with UInt64 counters.
 Use independent RNG seeds or streams for independent ensembles.
 
 Walker IDs default to `1:nwalkers` and remain fixed throughout the run.
-The density must not mutate its input,
-and must support concurrent calls with ThreadedExecutor. Do not mutate state fields.
+The density must not mutate its input. A scalar density must support concurrent
+calls with ThreadedExecutor; a batched callback controls its own parallelism.
+Do not mutate state fields.
 Use [`current_state`](@ref) for borrowed inspection and [`snapshot`](@ref) for copies.
 """
 function initialize(
@@ -174,7 +176,8 @@ function initialize(
     return EnsembleState(
         logdensity, moves, weights, executor, owned_rng, cycle_part,
         [rngpart_createrng(typeof(rng)) for _ in 1:n], ids, sortperm(ids),
-        positions, deepcopy(positions), logds, copy(logds), fill(false, n),
+        positions, deepcopy(positions), logds, copy(logds),
+        _batch_workspace(logdensity, positions, logds), fill(false, n),
         zeros(Int, length(moves)), zeros(Int, length(moves)), 0, 0, true,
     )
 end
@@ -190,6 +193,20 @@ function _checked_logdensity(f, x)
     value isa Real || throw(ArgumentError("Log density must return a real number"))
     (isnan(value) || value == Inf) && throw(DomainError(value, "Invalid log density"))
     return float(value)
+end
+
+Base.@inline function _accept_candidate!(state, i, log_hastings, logd, acceptance_part)
+    stored_logd = convert(eltype(state.logdensities), logd)
+    (isnan(stored_logd) || stored_logd == Inf) &&
+        throw(DomainError(stored_logd, "Invalid stored log density"))
+    state.candidate_logdensities[i] = stored_logd
+    T = eltype(state.positions[i])
+    logratio = convert(T, log_hastings + stored_logd - state.logdensities[i])
+    probability = isnan(logratio) ? zero(T) : clamp(exp(logratio), zero(T), one(T))
+    rng = state.walker_rngs[i]
+    set_rng!(rng, acceptance_part, state.walker_ids[i])
+    state.accepted[i] = rand(rng, T) < probability
+    return nothing
 end
 
 _select_move(::Nothing, rng, step) = 1
@@ -218,8 +235,8 @@ function _groups(move, part, proposal_idx, order)
     ngroups = group_count(move)
     if ngroups == 2
         split = fld(length(order), 2)
-        left = order[permutation[begin:split]]
-        right = order[permutation[(split + 1):end]]
+        left = order[view(permutation, 1:split)]
+        right = order[view(permutation, (split + 1):length(permutation))]
         return rand(rng, Bool) ? (left, right) : (right, left)
     end
     size, extra = divrem(length(order), ngroups)
@@ -245,15 +262,7 @@ function _evaluate!(state, move, part, proposal_idx, i, complement, acceptance_p
         state.accepted[i] = false
         return nothing
     end
-    logd = convert(eltype(state.logdensities), _checked_logdensity(state.logdensity, state.candidates[i]))
-    (isnan(logd) || logd == Inf) && throw(DomainError(logd, "Invalid stored log density"))
-    state.candidate_logdensities[i] = logd
-    T = eltype(state.positions[i])
-    logratio = convert(T, log_hastings + logd - state.logdensities[i])
-    probability = isnan(logratio) ? zero(T) : clamp(exp(logratio), zero(T), one(T))
-    set_rng!(rng, acceptance_part, state.walker_ids[i])
-    state.accepted[i] = rand(rng, T) < probability
-    return nothing
+    return _evaluate_candidate!(state.batch_workspace, state, i, log_hastings, acceptance_part)
 end
 
 function _evaluate_group!(::SerialExecutor, state, move, part, idx, group, complement, acceptance_part)
@@ -265,6 +274,39 @@ function _evaluate_group!(::ThreadedExecutor, state, move, part, idx, group, com
     Threads.@threads for k in eachindex(group)
         _evaluate!(state, move, part, idx, group[k], complement, acceptance_part)
     end
+end
+
+Base.@inline function _evaluate_candidate!(::Nothing, state, i, log_hastings, acceptance_part)
+    logd = _checked_logdensity(state.logdensity, state.candidates[i])
+    return _accept_candidate!(state, i, log_hastings, logd, acceptance_part)
+end
+function _evaluate_candidate!(workspace::BatchWorkspace, state, i, log_hastings, acceptance_part)
+    workspace.log_hastings[i] = log_hastings
+    state.accepted[i] = true # Marks a valid proposal until the batch is evaluated.
+    return nothing
+end
+
+_evaluate_batch!(::Nothing, state, group, acceptance_part) = nothing
+function _evaluate_batch!(workspace::BatchWorkspace, state, group, acceptance_part)
+    count = 0
+    for i in group
+        if state.accepted[i]
+            count += 1
+            copyto!(view(workspace.positions, :, count), state.candidates[i])
+        end
+    end
+    iszero(count) && return nothing
+    values = view(workspace.values, 1:count)
+    positions = view(workspace.positions, :, 1:count)
+    fill!(values, NaN)
+    state.logdensity.batch!(values, positions)
+    k = 0
+    for i in group
+        state.accepted[i] || continue
+        k += 1
+        _accept_candidate!(state, i, workspace.log_hastings[i], values[k], acceptance_part)
+    end
+    return nothing
 end
 
 """
@@ -296,6 +338,7 @@ function step!(state::EnsembleState)
         group = groups[active]
         _evaluate_group!(state.executor, state, move, part, idx, group,
             _complement(groups, active), acceptance_part)
+        _evaluate_batch!(state.batch_workspace, state, group, acceptance_part)
         for i in group
             if state.accepted[i]
                 copyto!(state.positions[i], state.candidates[i])

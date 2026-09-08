@@ -29,4 +29,5 @@ MoveMixture
 BatchedLogDensity
 SerialExecutor
 ThreadedExecutor
+KernelExecutor
 ```

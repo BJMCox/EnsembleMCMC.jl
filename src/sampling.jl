@@ -16,6 +16,16 @@ for the same initial state, move, RNG, and walker IDs.
 struct ThreadedExecutor <: AbstractExecutor end
 
 """
+    KernelExecutor()
+
+Execute proposals and acceptance with KernelAbstractions on the initial matrix's
+backend. Requires [`BatchedLogDensity`](@ref). Initialization evaluates the scalar
+callback on host vectors; sampling calls the batch callback with backend arrays.
+The caller places target data explicitly. CPU and CUDA arrays are supported.
+"""
+struct KernelExecutor <: AbstractExecutor end
+
+"""
     MoveMixture(moves, weights; schedule=:random)
 
 Select one move per complete sweep. `schedule=:random` gives fixed random
@@ -60,7 +70,7 @@ _walker_rngpart(part, purpose, proposal) = RNGPartition(
     AbstractRNG(part, _stream_index(purpose, proposal)), Base.OneTo(typemax(Int32) - 2),
 )
 
-mutable struct EnsembleState{F,M,W,E,R,P,V,L,B}
+mutable struct EnsembleState{F,M,W,E,R,P,V,L,B,A}
     logdensity::F
     moves::M
     weights::W
@@ -75,7 +85,7 @@ mutable struct EnsembleState{F,M,W,E,R,P,V,L,B}
     logdensities::L
     candidate_logdensities::L
     batch_workspace::B
-    accepted::Vector{Bool}
+    accepted::A
     attempts::Vector{Int}
     accepts::Vector{Int}
     step::Int
@@ -114,7 +124,8 @@ Copy the fields returned by [`current_state`](@ref), including every nested
 array. Later steps and edits to the snapshot cannot affect each other.
 A snapshot contains sample data and counts, not a resumable sampler checkpoint.
 """
-snapshot(state::EnsembleState) = deepcopy(current_state(state))
+snapshot(state::EnsembleState) = _snapshot(state, state.batch_workspace)
+_snapshot(state, workspace) = deepcopy(current_state(state))
 
 function Base.show(io::IO, state::EnsembleState)
     print(io, "EnsembleState(", length(first(state.positions)), " dimensions, ",
@@ -146,6 +157,7 @@ function initialize(
     move = StretchMove(), executor::AbstractExecutor = SerialExecutor(),
     walker_ids = collect(eachindex(initial)),
 )
+    executor isa KernelExecutor && throw(ArgumentError("KernelExecutor requires an initial matrix"))
     isempty(initial) && throw(ArgumentError("An ensemble cannot be empty"))
     Base.require_one_based_indexing(initial)
     d = length(first(initial))
@@ -183,9 +195,10 @@ function initialize(
 end
 
 function initialize(rng::Union{Philox4x{UInt64},Threefry4x{UInt64}}, logdensity,
-    initial::AbstractMatrix; kwargs...)
+    initial::AbstractMatrix; executor=SerialExecutor(), kwargs...)
     Base.require_one_based_indexing(initial)
-    return initialize(rng, logdensity, eachcol(initial); kwargs...)
+    executor isa KernelExecutor && return _initialize_kernel(rng, logdensity, initial; kwargs...)
+    return initialize(rng, logdensity, eachcol(initial); executor, kwargs...)
 end
 
 function _checked_logdensity(f, x)
@@ -321,7 +334,9 @@ without a copy, or [`snapshot`](@ref) to retain it.
 An exception during a sweep invalidates the state. Initialize a fresh state
 after correcting the target instead of resuming a partially completed sweep.
 """
-function step!(state::EnsembleState)
+step!(state::EnsembleState) = _step!(state, state.batch_workspace)
+_step!(state, workspace) = _step!(state)
+function _step!(state)
     state.valid || throw(ArgumentError("Cannot resume a state after a failed sweep"))
     state.step < typemax(Int32) - 2 || throw(ArgumentError("RNG step range exhausted"))
     state.valid = false
@@ -339,20 +354,25 @@ function step!(state::EnsembleState)
         _evaluate_group!(state.executor, state, move, part, idx, group,
             _complement(groups, active), acceptance_part)
         _evaluate_batch!(state.batch_workspace, state, group, acceptance_part)
-        for i in group
-            if state.accepted[i]
-                copyto!(state.positions[i], state.candidates[i])
-                state.logdensities[i] = state.candidate_logdensities[i]
-            end
-        end
+        _commit_group!(state, group, state.batch_workspace)
     end
     state.active_index = idx
     state.attempts[idx] += length(state.positions)
-    state.accepts[idx] += count(state.accepted)
+    state.accepts[idx] += _accepted_count(state, state.batch_workspace)
     state.step += 1
     state.valid = true
     return state
 end
+
+function _commit_group!(state, group, workspace)
+    for i in group
+        if state.accepted[i]
+            copyto!(state.positions[i], state.candidates[i])
+            state.logdensities[i] = state.candidate_logdensities[i]
+        end
+    end
+end
+_accepted_count(state, workspace) = count(state.accepted)
 
 function step!(state::EnsembleState, nsweeps::Integer)
     nsweeps >= 0 || throw(ArgumentError("Sweep count must be nonnegative"))
@@ -377,21 +397,25 @@ two indexed by walker and sweep), `move_indices` (one move index per sweep), and
 function sample!(state::EnsembleState, nsweeps::Integer)
     nsweeps >= 0 || throw(ArgumentError("Sweep count must be nonnegative"))
     state.valid || throw(ArgumentError("Cannot resume a state after a failed sweep"))
-    n = length(state.positions)
-    d = length(first(state.positions))
-    positions = Array{eltype(first(state.positions))}(undef, d, n, nsweeps)
-    logdensities = Matrix{eltype(state.logdensities)}(undef, n, nsweeps)
-    accepted = Matrix{Bool}(undef, n, nsweeps)
-    move_indices = Vector{Int}(undef, nsweeps)
+    history = _allocate_history(state, nsweeps, state.batch_workspace)
     for sweep in 1:nsweeps
         step!(state)
-        for i in 1:n
-            positions[:, i, sweep] .= state.positions[i]
-        end
-        logdensities[:, sweep] .= state.logdensities
-        accepted[:, sweep] .= state.accepted
-        move_indices[sweep] = state.active_index
+        _store_history!(history, state, sweep, state.batch_workspace)
     end
-    return (; positions, logdensities, accepted, move_indices,
-        walker_ids = copy(state.walker_ids))
+    return (; history..., walker_ids=copy(state.walker_ids))
+end
+
+function _allocate_history(state, nsweeps, workspace)
+    n, d = length(state.positions), length(first(state.positions))
+    return (; positions=Array{eltype(first(state.positions))}(undef, d, n, nsweeps),
+        logdensities=Matrix{eltype(state.logdensities)}(undef, n, nsweeps),
+        accepted=Matrix{Bool}(undef, n, nsweeps), move_indices=Vector{Int}(undef, nsweeps))
+end
+function _store_history!(history, state, sweep, workspace)
+    for i in eachindex(state.positions)
+        history.positions[:, i, sweep] .= state.positions[i]
+    end
+    history.logdensities[:, sweep] .= state.logdensities
+    history.accepted[:, sweep] .= state.accepted
+    history.move_indices[sweep] = state.active_index
 end

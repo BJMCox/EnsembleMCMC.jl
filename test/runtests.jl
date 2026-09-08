@@ -198,3 +198,4 @@ end
 
 include("norm.jl")
 include("batched.jl")
+include("kernel.jl")

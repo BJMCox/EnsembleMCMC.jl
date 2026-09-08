@@ -4,15 +4,24 @@ version = "0.0.1"
 license = "Apache-2.0"
 
 [deps]
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Random123 = "74087812-796a-5b5d-8853-05524746bad3"
 
 [compat]
+CUDA = "6"
+KernelAbstractions = "0.9.42"
 julia = "1.10"
 LinearAlgebra = "1"
 Random = "1"
 Random123 = "1.2"
+
+[weakdeps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+
+[extensions]
+EnsembleMCMCCUDAExt = "CUDA"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"

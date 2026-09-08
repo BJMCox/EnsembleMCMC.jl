@@ -134,9 +134,49 @@ degenerate proposals. Fill every output, keep positions read-only, and retain
 neither borrowed array. Both callbacks must compute the same log density.
 Exceptions or invalid outputs invalidate the state.
 
-Storage remains on the CPU; this is not device-resident sampling.
+With `SerialExecutor` or `ThreadedExecutor`, storage remains on the CPU.
 `ThreadedExecutor` parallelizes proposals. The callback owns evaluation
 parallelism. Cheap scalar targets may run faster without batching.
+
+## CUDA sampling
+
+Use [`KernelExecutor`](@ref) with a CUDA matrix and a device batch callback:
+
+```julia
+using CUDA, EnsembleMCMC, Random, Random123
+
+CUDA.allowscalar(false)
+rng = Philox4x((42, 5))
+initial = CuArray(randn(rng, Float32, 8, 32))
+scalar(x) = -sum(abs2, x) / 2
+batch!(values, positions) = (values .= vec(-sum(abs2, positions; dims=1) / 2))
+target = BatchedLogDensity(scalar, batch!)
+state = initialize(rng, target, initial; move=DEMove(), executor=KernelExecutor())
+step!(state, 100)
+draws = sample!(state, 200)
+host_positions = Array(draws.positions)
+```
+
+Initialization copies coordinates to the host for validation and calls `scalar`
+with CPU vectors. Supply separate host and device target data when needed.
+During sampling, proposals, log densities, acceptance flags, snapshots and history
+stay on the input device. `current_state(state).positions` is a host vector of
+device column views. Walker IDs, move indices and counts remain on the host.
+
+The current Random123 backend generates controls on the host. Each group transfers
+those controls to the device and returns small status/count records. Successful
+sweeps transfer no coordinates or log densities to the host. Transfers such as
+`Array(draws.positions)` are explicit.
+
+The callback must use the current task's CUDA stream, or synchronize its own work
+before returning. It must fill every output and leave input positions unchanged.
+Sampler operations run on the input device and complete before returning.
+CPU and GPU floating-point arithmetic may differ, so trajectories need not match
+bit for bit. `KernelExecutor` also accepts CPU matrices for testing and supports
+the three built-in moves and their mixtures.
+
+GPU sampling suits expensive, parallel batch targets. Small targets can be slower
+because kernel launches and group synchronization dominate.
 
 ## Inputs and outputs
 
